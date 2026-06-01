@@ -1,0 +1,59 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  email     String   @unique
+  name      String?
+  password  String
+  role      String   @default("USER")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Product {
+  id           String        @id @default(auto()) @map("_id") @db.ObjectId
+  sku          String        @unique
+  name         String
+  category     String
+  stock        Int
+  price        Float
+  transactions Transaction[]
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+}
+
+model Transaction {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  invoiceDate DateTime
+  customerId  String   // Diubah menjadi String (atau @db.ObjectId jika nanti ada model Customer)
+  productId   String   @db.ObjectId // Foreign key harus mengikuti tipe data ID dari model Product
+  product     Product  @relation(fields: [productId], references: [id])
+  quantity    Int
+  unitPrice   Float
+  totalSales  Float
+  status      String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  region String @default("Jakarta")
+}
+
+model Alert {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  type        String   // e.g., "STOCKOUT", "CHURN_RISK", "ANOMALY"
+  title       String
+  description String
+  severity    String   // "LOW", "MEDIUM", "HIGH", "CRITICAL"
+  status      String   @default("ACTIVE") // "ACTIVE", "RESOLVED"
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
