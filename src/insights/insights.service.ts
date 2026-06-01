@@ -223,4 +223,30 @@ export class InsightsService {
       );
     }
   }
+
+  //! FITUR TAMBAHAN: MANUAL CHURN PREDICTION (Untuk Postman/Testing)
+  async getChurnPrediction(
+    recency: number,
+    frequency: number,
+    monetary: number,
+  ) {
+    const url = `${this.pythonApiBaseUrl}/predict-churn`;
+    const payload = {
+      Recency: recency,
+      Frequency: frequency,
+      Monetary: monetary,
+    };
+
+    try {
+      const response = await lastValueFrom(
+        this.httpService.post<any>(url, payload),
+      );
+      return response.data;
+    } catch (error: any) {
+      console.error('Gagal menghubungi Model Churn Python:', error.message);
+      throw new InternalServerErrorException(
+        'Layanan Prediksi Churn AI sedang tidak tersedia',
+      );
+    }
+  }
 }

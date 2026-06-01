@@ -5,14 +5,21 @@ import {
   Body,
   UsePipes,
   ValidationPipe,
+  Get,
 } from '@nestjs/common';
 import { InsightsService } from './insights.service';
 import { PredictChurnDto } from './dto/predict-churn.dto';
 import { PredictForecastDto } from './dto/predict-forecast.dto';
 
-@Controller('insights')
+@Controller('api/insights')
 export class InsightsController {
   constructor(private readonly insightsService: InsightsService) {}
+
+  @Get('risk-analysis') // <--- Ini yang mendaftarkan akhiran /risk-analysis
+  async getRiskAnalysis() {
+    // Memanggil fungsi AI yang baru saja kita buat di Service
+    return await this.insightsService.getCustomerInsights();
+  }
 
   //! ENDPOINT 1: CUSTOMER CHURN PREDICTION
   @Post('churn-prediction')
