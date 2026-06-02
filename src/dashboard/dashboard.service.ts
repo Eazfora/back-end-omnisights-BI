@@ -11,6 +11,25 @@ import { CreateProductDto } from './dto/create-product.dto';
 
 @Injectable()
 export class DashboardService {
+  constructor(private readonly prisma: PrismaService) {}
+
+  // ==========================================
+  // FUNGSI BANTUAN: Menghitung Tren & Arah
+  // ==========================================
+  private calculateTrend(current: number, previous: number): string {
+    if (previous === 0) return current > 0 ? '+100%' : '0%';
+    const change = ((current - previous) / previous) * 100;
+    return change >= 0 ? `+${change.toFixed(1)}%` : `${change.toFixed(1)}%`;
+  }
+
+  private calculateTrendDirection(current: number, previous: number): string {
+    if (previous === 0) return current > 0 ? 'up' : 'neutral';
+    return current >= previous ? 'up' : 'down';
+  }
+
+  // ==========================================
+  // FITUR: MENYIMPAN PRODUK BARU
+  // ==========================================
   async createProduct(data: CreateProductDto) {
     try {
       return await this.prisma.product.create({
@@ -19,30 +38,19 @@ export class DashboardService {
           sku: data.sku,
           price: data.price,
           stock: data.stock,
-          category: data.category, // <--- PRISMA MEMINTA BARIS INI
+          category: data.category,
         },
       });
-    } catch (error) {
+    } catch (error: any) {
       throw new InternalServerErrorException(
         'Gagal membuat produk baru',
-        error,
+        error.message,
       );
     }
   }
-  constructor(private readonly prisma: PrismaService) {}
 
   // ==========================================
-  // FUNGSI BANTUAN: Menghitung persentase tren (+X% atau -X%)
-  // ==========================================
-  private calculateTrend(current: number, previous: number): string {
-    if (previous === 0) return current > 0 ? '+100%' : '0%';
-    const change = ((current - previous) / previous) * 100;
-    // Format angka menjadi 1 desimal (contoh: +12.5% atau -2.1%)
-    return change > 0 ? `+${change.toFixed(1)}%` : `${change.toFixed(1)}%`;
-  }
-
-  // ==========================================
-  // FITUR 1: MENYIMPAN DATA & MEMOTONG STOK
+  // FITUR: MENYIMPAN TRANSAKSI & MEMOTONG STOK
   // ==========================================
   async createTransaction(data: CreateTransactionDto) {
     try {
@@ -76,19 +84,12 @@ export class DashboardService {
         }),
       ]);
 
-      // ==========================================
-      // LOGIKA CEK STOK & BUAT ALERT (ANTI DUPLIKAT)
-      // ==========================================
+      // LOGIKA CEK STOK & BUAT ALERT
       if (updatedProduct.stock <= 10) {
-        // 1. Cek dulu, apakah sudah ada alert yang AKTIF untuk produk ini?
         const existingAlert = await this.prisma.alert.findFirst({
-          where: {
-            title: { contains: updatedProduct.name },
-            status: 'ACTIVE',
-          },
+          where: { title: { contains: updatedProduct.name }, status: 'ACTIVE' },
         });
 
-        // 2. Kalau BELUM ADA, baru kita buatkan alert baru
         if (!existingAlert) {
           await this.prisma.alert.create({
             data: {
@@ -100,7 +101,7 @@ export class DashboardService {
             },
           });
         }
-      } // <--- INI DIA KURUNG KURAWAL YANG HILANG TADI!
+      }
 
       return newTransaction;
     } catch (error) {
@@ -116,7 +117,7 @@ export class DashboardService {
   }
 
   // ==========================================
-  // FITUR 2: MENGAMBIL DAFTAR PRODUK (Dropdown)
+  // FITUR: MENGAMBIL DAFTAR PRODUK & PELANGGAN
   // ==========================================
   async getAllProducts() {
     return await this.prisma.product.findMany({
@@ -125,9 +126,6 @@ export class DashboardService {
     });
   }
 
-  // ==========================================
-  // FITUR 3: MENGAMBIL DAFTAR PELANGGAN (Dropdown)
-  // ==========================================
   async getAllCustomers() {
     return await this.prisma.user.findMany({
       where: { role: 'USER' },
@@ -137,11 +135,10 @@ export class DashboardService {
   }
 
   // ==========================================
-  // FITUR 4: OVERVIEW DASHBOARD & KALKULASI TREN
+  // FITUR: OVERVIEW DASHBOARD & KALKULASI TREN
   // ==========================================
   async getOverview() {
     try {
-      // Setup Waktu: Awal Bulan Ini & Awal Bulan Lalu
       const now = new Date();
       const startOfThisMonth = new Date(now.getFullYear(), now.getMonth(), 1);
       const startOfLastMonth = new Date(
@@ -150,7 +147,7 @@ export class DashboardService {
         1,
       );
 
-      // --- 1. KALKULASI TOTAL PENDAPATAN & TREN ---
+      // --- 1. KALKULASI TOTAL PENDAPATAN ---
       const totalRevenueResult = await this.prisma.transaction.aggregate({
         _sum: { totalSales: true },
         where: { status: 'Completed' },
@@ -168,15 +165,18 @@ export class DashboardService {
           invoiceDate: { gte: startOfLastMonth, lt: startOfThisMonth },
         },
       });
-      const revenueTrend = this.calculateTrend(
-        revThisMonth._sum.totalSales ?? 0,
-        revLastMonth._sum.totalSales ?? 0,
+
+      const currentRev = revThisMonth._sum.totalSales ?? 0;
+      const prevRev = revLastMonth._sum.totalSales ?? 0;
+      const revenueTrend = this.calculateTrend(currentRev, prevRev);
+      const revenueTrendDirection = this.calculateTrendDirection(
+        currentRev,
+        prevRev,
       );
 
-      // --- 2. KALKULASI PELANGGAN & TREN ---
+      // --- 2. KALKULASI PELANGGAN ---
       const customers = await this.prisma.transaction.findMany({
         distinct: ['customerId'],
-        select: { customerId: true },
       });
       const totalCustomers = customers.length;
 
@@ -188,16 +188,20 @@ export class DashboardService {
         distinct: ['customerId'],
         where: { invoiceDate: { gte: startOfLastMonth, lt: startOfThisMonth } },
       });
+
       const customersTrend = this.calculateTrend(
         custThisMonth.length,
         custLastMonth.length,
       );
+      const customersTrendDirection = this.calculateTrendDirection(
+        custThisMonth.length,
+        custLastMonth.length,
+      );
 
-      // --- 3. KALKULASI ALERT & TREN ---
+      // --- 3. KALKULASI ALERT ---
       const activeAlerts = await this.prisma.alert.count({
         where: { status: 'ACTIVE' },
       });
-
       const alertsThisMonth = await this.prisma.alert.count({
         where: { status: 'ACTIVE', createdAt: { gte: startOfThisMonth } },
       });
@@ -207,7 +211,12 @@ export class DashboardService {
           createdAt: { gte: startOfLastMonth, lt: startOfThisMonth },
         },
       });
+
       const alertsTrend = this.calculateTrend(alertsThisMonth, alertsLastMonth);
+      const alertsTrendDirection = this.calculateTrendDirection(
+        alertsThisMonth,
+        alertsLastMonth,
+      );
 
       // --- 4. TRANSAKSI TERBARU & CHART ---
       const recentTransactions = await this.prisma.transaction.findMany({
@@ -242,17 +251,11 @@ export class DashboardService {
       let predictedTrend = '0.0%';
 
       try {
-        // Kita HAPUS query pencarian quantity (qtyThisMonthResult)
-        // Karena di Bagian 1 kamu sebenarnya sudah menghitung pendapatan bulan ini!
-        // Yaitu di variabel: revThisMonth._sum.totalSales
-
-        const currentSales = revThisMonth._sum.totalSales ?? 0;
-
         const pythonResponse = await axios.post(
           'http://localhost:8000/forecast-sales',
           {
             Target_Month: '2026-06',
-            Current_Quantity: currentSales, // <--- KITA KIRIM RUPIAH SEKARANG!
+            Current_Quantity: currentRev,
           },
         );
 
@@ -263,11 +266,11 @@ export class DashboardService {
           predictedGrowth = `${pythonResponse.data.growth_percentage}%`;
           predictedTrend = pythonResponse.data.trend || '+0.0%';
         }
-      } catch (pythonError) {
+      } catch (pythonError: any) {
         console.warn('⚠️ API Python offline.', pythonError.message);
       }
 
-      // KEMBALIKAN SEMUA DATA KE REACT
+      // KEMBALIKAN SEMUA DATA (TERMASUK DIRECTION UNTUK UI)
       return {
         totalRevenue,
         activeAlerts,
@@ -277,8 +280,11 @@ export class DashboardService {
         predictedGrowth,
         predictedTrend,
         revenueTrend,
+        revenueTrendDirection, // <--- BARU: untuk warna hijau/merah di UI
         alertsTrend,
+        alertsTrendDirection, // <--- BARU
         customersTrend,
+        customersTrendDirection, // <--- BARU
       };
     } catch (error) {
       console.error('Gagal mengambil data overview:', error);
@@ -286,13 +292,15 @@ export class DashboardService {
     }
   }
 
+  // ==========================================
+  // FITUR: PREDIKSI CHURN MANUAL
+  // ==========================================
   async getChurnPrediction(
     recency: number,
     frequency: number,
     monetary: number,
   ) {
     try {
-      // Menembak API Python yang baru saja kita tes
       const response = await axios.post('http://localhost:8000/predict-churn', {
         Recency: recency,
         Frequency: frequency,
@@ -300,7 +308,6 @@ export class DashboardService {
       });
       return response.data.prediction;
     } catch (error) {
-      console.error('Gagal menghubungi model Python:', error);
       throw new InternalServerErrorException('Model AI sedang tidak tersedia');
     }
   }
@@ -310,65 +317,47 @@ export class DashboardService {
   // ==========================================
   async updateStock(productId: string, addedQuantity: number) {
     try {
-      // 1. Tambah stok di database
       const updatedProduct = await this.prisma.product.update({
         where: { id: productId },
         data: { stock: { increment: addedQuantity } },
       });
 
-      // 2. Logika Pemadam Alert Otomatis
       if (updatedProduct.stock > 10) {
         await this.prisma.alert.updateMany({
-          where: {
-            title: { contains: updatedProduct.name },
-            status: 'ACTIVE',
-          },
-          data: {
-            status: 'RESOLVED',
-          },
+          where: { title: { contains: updatedProduct.name }, status: 'ACTIVE' },
+          data: { status: 'RESOLVED' },
         });
       }
 
       return {
-        message:
-          'Stok berhasil ditambah dan sistem telah mengecek status peringatan.',
+        message: 'Stok ditambah & alert dicek.',
         product: updatedProduct,
       };
     } catch (error) {
-      throw new InternalServerErrorException(
-        'Gagal memperbarui stok atau produk tidak ditemukan.',
-      );
+      throw new InternalServerErrorException('Gagal memperbarui stok.');
     }
   }
 
   // ==========================================
-  // FITUR: MENDAPATKAN DAFTAR KATEGORI PRODUK
+  // FITUR: KATEGORI PRODUK
   // ==========================================
   async getProductCategories() {
     try {
-      // Mengambil daftar kategori unik dari tabel Product
       const products = await this.prisma.product.findMany({
         select: { category: true },
         distinct: ['category'],
       });
-
-      // Membersihkan data agar hanya berupa array string sederhana
       const categories = products
         .map((p) => p.category)
-        .filter((category) => category !== null && category !== '');
-
-      return {
-        message: 'Daftar kategori berhasil dimuat',
-        data: categories,
-      };
+        .filter((c) => c !== null && c !== '');
+      return { message: 'Daftar kategori dimuat', data: categories };
     } catch (error) {
-      console.error('Error fetching categories:', error);
-      throw new InternalServerErrorException('Gagal memuat daftar kategori');
+      throw new InternalServerErrorException('Gagal memuat kategori');
     }
   }
 
   // ==========================================
-  // FITUR: DATA GRAFIK PRAKIRAAN AI (MICROSERVICE) - FINAL & REALTIME KORELASI
+  // FITUR: DATA GRAFIK PRAKIRAAN AI (ADVANCED FORECAST)
   // ==========================================
   async getAdvancedForecast(
     category?: string,
@@ -381,27 +370,17 @@ export class DashboardService {
       const pastDate = new Date(today);
       pastDate.setDate(today.getDate() - days);
 
-      const formatDateLocal = (d: Date) => {
-        const year = d.getFullYear();
-        const month = String(d.getMonth() + 1).padStart(2, '0');
-        const day = String(d.getDate()).padStart(2, '0');
-        return `${year}-${month}-${day}`;
-      };
+      const formatDateLocal = (d: Date) =>
+        `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
       const whereClause: any = {
         status: 'Completed',
         invoiceDate: { gte: pastDate },
       };
-
-      if (category && category !== 'All') {
+      if (category && category !== 'All')
         whereClause.product = { category: category };
-      }
+      if (region && region !== 'Indonesia') whereClause.region = region;
 
-      if (region && region !== 'Indonesia') {
-        whereClause.region = region;
-      }
-
-      // 1. Ambil data historis dari database Eazfora
       const transactions = await this.prisma.transaction.findMany({
         where: whereClause,
         include: { product: true },
@@ -417,12 +396,10 @@ export class DashboardService {
       const chartData = [];
       let lastActual = 0;
 
-      // 2. Susun data historis untuk grafik
       for (let i = days; i >= 0; i--) {
         const d = new Date(today);
         d.setDate(today.getDate() - i);
         const dateStr = formatDateLocal(d);
-
         const actual = dailyData.get(dateStr) || 0;
 
         chartData.push({
@@ -430,20 +407,14 @@ export class DashboardService {
           actual: actual,
           predicted: null,
         });
-
         if (i === 0) lastActual = actual;
       }
 
-      if (chartData.length > 0) {
+      if (chartData.length > 0)
         chartData[chartData.length - 1].predicted =
           chartData[chartData.length - 1].actual;
-      }
 
-      // ==========================================
-      // INTEGRASI PYTHON: MENGIRIM DATA UNTUK PREDIKSI & KORELASI
-      // ==========================================
       let predictionsArray: number[] = [];
-
       let pythonInsights: any = null;
 
       try {
@@ -452,7 +423,6 @@ export class DashboardService {
           {
             Target_Month: '2026-06',
             Current_Quantity: lastActual,
-            // MENGIRIM ARRAY DATA KE PYTHON UNTUK DIHITUNG PANDAS!
             Historical_Data: chartData.map((d) => ({
               date: d.date,
               sales: d.actual,
@@ -464,26 +434,23 @@ export class DashboardService {
           predictionsArray = pythonResponse.data.predictions_array;
           pythonInsights = pythonResponse.data;
         }
-      } catch (pythonError) {
+      } catch (pythonError: any) {
         console.warn('⚠️ API Python gagal merespons.', pythonError.message);
       }
 
-      // ==========================================
-      // MEMASUKKAN PREDIKSI PYTHON KE DALAM GRAFIK
-      // ==========================================
       let fallbackPred = lastActual === 0 ? 15000000 : lastActual;
 
       for (let i = 1; i <= 7; i++) {
         const d = new Date(today);
         d.setDate(today.getDate() + i);
-
         let currentPred;
 
         if (predictionsArray && predictionsArray.length >= i) {
           currentPred = predictionsArray[i - 1];
         } else {
-          const growthFactor = 1 + (Math.random() * 0.06 - 0.02);
-          fallbackPred = Math.round(fallbackPred * growthFactor);
+          fallbackPred = Math.round(
+            fallbackPred * (1 + (Math.random() * 0.06 - 0.02)),
+          );
           currentPred = fallbackPred;
         }
 
@@ -494,13 +461,11 @@ export class DashboardService {
         });
       }
 
-      // 3. Kembalikan data lengkap ke React (Termasuk Korelasi)
       return {
         message: 'Data grafik prakiraan berhasil dimuat',
         data: chartData,
         insights: {
           anomalySpike: pythonInsights ? pythonInsights.anomaly_spike : 18,
-          // UBAH BARIS INI: Jika filter 'All', maka tulis 'Semua Kategori'
           anomalyCategory:
             category && category !== 'All' ? category : 'Semua Kategori',
           confidenceScore: pythonInsights
@@ -513,31 +478,25 @@ export class DashboardService {
         },
       };
     } catch (error) {
-      console.error('Error generating forecast chart:', error);
       throw new InternalServerErrorException('Gagal memuat grafik AI');
     }
   }
 
   // ==========================================
-  // FITUR: LATIH ULANG MODEL AI (REAL)
+  // FITUR: RETRAIN MODEL
   // ==========================================
   async retrainForecastModel() {
     try {
-      // 1. Ambil seluruh data transaksi yang sudah sukses dari Database
       const allTransactions = await this.prisma.transaction.findMany({
         where: { status: 'Completed' },
         select: { invoiceDate: true, totalSales: true },
         orderBy: { invoiceDate: 'asc' },
       });
-
-      // 2. Kirim kumpulan data tersebut ke Python sebagai bahan belajar
       const response = await axios.post('http://localhost:8000/retrain', {
         transactions: allTransactions,
       });
-
       return response.data;
     } catch (error) {
-      console.error('Gagal retrain:', error);
       throw new InternalServerErrorException(
         'Gagal menghubungi server AI Python',
       );
@@ -545,33 +504,45 @@ export class DashboardService {
   }
 
   // ==========================================
-  // FITUR: MANAJEMEN INVENTARIS & SMART RESTOCK (RULE-BASED)
+  // FITUR: INVENTORY STATUS (RULE-BASED)
   // ==========================================
   async getInventoryStatus() {
     try {
-      // 1. Tarik data produk riil dari database
       const products = await this.prisma.product.findMany({
-        orderBy: { stock: 'asc' }, // Urutkan dari stok paling sedikit
+        orderBy: { stock: 'asc' },
       });
+      const activeAlerts: any[] = [];
+      let alertIdCounter = 1;
 
-      // 2. Transformasi data dan terapkan aturan otomatisasi (Rule-Based)
       const processedProducts = products.map((product) => {
         let status = 'Safe Stock';
         let severity = 'safe';
         let recommendation = 'No action required';
 
-        // ATURAN AMBANG BATAS STOK (Sesuai dengan spesifikasi UI React)
         if (product.stock < 20) {
           status = 'Emergency Restock';
           severity = 'critical';
-          // Rekomendasi otomatis mengisi hingga kapasitas ideal (misal: 200 unit)
-          const idealOrder = 200 - product.stock;
-          recommendation = `Order +${idealOrder} units immediately`;
+          recommendation = `Order +${200 - product.stock} units immediately`;
+          activeAlerts.push({
+            id: alertIdCounter++,
+            type: 'STOCKOUT',
+            title: 'Critical Stock Level',
+            description: `Product ${product.name} is running critically low.`,
+            severity: 'CRITICAL',
+            status: 'ACTIVE',
+          });
         } else if (product.stock >= 20 && product.stock < 100) {
           status = 'Depleting Fast';
           severity = 'warning';
-          const idealOrder = 150 - product.stock;
-          recommendation = `Prepare +${idealOrder} units within 3 days`;
+          recommendation = `Prepare +${150 - product.stock} units within 3 days`;
+          activeAlerts.push({
+            id: alertIdCounter++,
+            type: 'ANOMALY',
+            title: 'Stok Menipis',
+            description: `Product ${product.name} mendekati batas aman.`,
+            severity: 'HIGH',
+            status: 'ACTIVE',
+          });
         }
 
         return {
@@ -581,45 +552,14 @@ export class DashboardService {
           category: product.category || 'Uncategorized',
           stock: product.stock,
           price: product.price,
-          status: status,
-          severity: severity,
-          recommendation: recommendation,
+          status,
+          severity,
+          recommendation,
         };
       });
 
-      // 3. Buat Notifikasi Aktif (Active Alerts) secara dinamis dari produk kritis
-
-      const activeAlerts: any[] = [];
-      let alertIdCounter = 1;
-
-      processedProducts.forEach((p) => {
-        if (p.severity === 'critical') {
-          activeAlerts.push({
-            id: alertIdCounter++,
-            type: 'STOCKOUT',
-            title: 'Critical Stock Level',
-            description: `Product ${p.name} is running critically low (${p.stock} units left).`,
-            severity: 'CRITICAL',
-            status: 'ACTIVE',
-          });
-        } else if (p.severity === 'warning') {
-          activeAlerts.push({
-            id: alertIdCounter++,
-            type: 'ANOMALY',
-            title: 'Stok Menipis',
-            description: `Product ${p.name} berkurang mendekati batas aman.`,
-            severity: 'HIGH',
-            status: 'ACTIVE',
-          });
-        }
-      });
-
-      return {
-        products: processedProducts,
-        alerts: activeAlerts,
-      };
+      return { products: processedProducts, alerts: activeAlerts };
     } catch (error) {
-      console.error('Gagal memuat data inventaris:', error);
       throw new InternalServerErrorException(
         'Gagal memproses manajemen inventaris',
       );
@@ -627,78 +567,55 @@ export class DashboardService {
   }
 
   // ==========================================
-  // FITUR: WAWASAN PELANGGAN & PREDIKSI CHURN (RFM + AI)
+  // FITUR: CUSTOMER INSIGHTS
   // ==========================================
   async getCustomerInsights() {
     try {
-      // 1. Tarik semua transaksi yang sudah sukses
       const transactions = await this.prisma.transaction.findMany({
         where: { status: 'Completed' },
         orderBy: { invoiceDate: 'desc' },
       });
-
       if (transactions.length === 0) return null;
 
-      const today = new Date();
-      // Gunakan Map untuk mengelompokkan data per pelanggan (berdasarkan ID atau Nama)
       const customerMap = new Map();
-
       transactions.forEach((tx) => {
-        // Asumsi: Jika tidak ada customerId khusus, kita gunakan nama pelanggan sebagai identitas unik
-        // BENAR
         const custId = tx.customerId || 'Walk-in Customer';
-
         if (!customerMap.has(custId)) {
           customerMap.set(custId, {
-            CustomerID: customerMap.size + 1, // Buat ID urut
+            CustomerID: customerMap.size + 1,
             Name: custId,
             LastDate: tx.invoiceDate,
             Frequency: 0,
             Monetary: 0,
           });
         }
-
         const cust = customerMap.get(custId);
         cust.Frequency += 1;
         cust.Monetary += tx.totalSales;
-        // Simpan tanggal transaksi terbaru
-        if (new Date(tx.invoiceDate) > new Date(cust.LastDate)) {
+        if (new Date(tx.invoiceDate) > new Date(cust.LastDate))
           cust.LastDate = tx.invoiceDate;
-        }
       });
 
-      // 2. Format menjadi RFM Data
-      const rfmData = Array.from(customerMap.values()).map((c) => {
-        const diffTime = Math.abs(
-          today.getTime() - new Date(c.LastDate).getTime(),
-        );
-        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+      const rfmData = Array.from(customerMap.values()).map((c) => ({
+        ...c,
+        Recency: Math.ceil(
+          Math.abs(new Date().getTime() - new Date(c.LastDate).getTime()) /
+            (1000 * 60 * 60 * 24),
+        ),
+      }));
 
-        return {
-          CustomerID: c.CustomerID,
-          Name: c.Name,
-          Recency: diffDays,
-          Frequency: c.Frequency,
-          Monetary: c.Monetary,
-        };
-      });
-
-      // 3. Lempar ke Python FastAPI untuk ditebak (Prediksi Churn)
       let aiPredictions = [];
       try {
         const pythonResponse = await axios.post(
           'http://localhost:8000/predict-churn-batch',
-          {
-            customers: rfmData,
-          },
+          { customers: rfmData },
         );
         aiPredictions = pythonResponse.data.predictions;
       } catch (err) {
         console.warn('API Python Prediksi Churn Gagal', err);
-        return null; // Batalkan jika AI mati
+        return null;
       }
 
-      // 4. Kalkulasi Metrik untuk Grafik UI (Segmentation & Summary)
       let churnedCount = 0;
       let totalMonetary = 0;
       let champions = 0,
@@ -707,19 +624,11 @@ export class DashboardService {
 
       aiPredictions.forEach((p) => {
         totalMonetary += p.Monetary;
-        if (p.Churn > 0.6) churnedCount++; // Ambang batas 60% dianggap Churn
-
-        // Segmentasi RFM Sederhana
+        if (p.Churn > 0.6) churnedCount++;
         if (p.Recency <= 30 && p.Frequency >= 3) champions++;
         else if (p.Recency > 60) lowValue++;
         else needsAttention++;
       });
-
-      // Filter 5 pelanggan paling berisiko tinggi untuk tabel At-Risk
-      const atRiskCustomers = aiPredictions
-        .filter((p) => p.Churn > 0.5)
-        .sort((a, b) => b.Churn - a.Churn)
-        .slice(0, 5);
 
       return {
         total_customers: aiPredictions.length,
@@ -732,11 +641,13 @@ export class DashboardService {
           needs_attention: needsAttention,
           low_value: lowValue,
         },
-        at_risk_customers: atRiskCustomers,
+        at_risk_customers: aiPredictions
+          .filter((p) => p.Churn > 0.5)
+          .sort((a, b) => b.Churn - a.Churn)
+          .slice(0, 5),
         engine: 'Eazfora AI Churn Engine',
       };
     } catch (error) {
-      console.error('Error Customer Insights:', error);
       throw new InternalServerErrorException(
         'Gagal memproses metrik pelanggan',
       );
