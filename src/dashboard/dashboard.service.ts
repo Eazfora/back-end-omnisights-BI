@@ -16,15 +16,19 @@ export class DashboardService {
   // ==========================================
   // FUNGSI BANTUAN: Menghitung Tren & Arah
   // ==========================================
-  private calculateTrend(current: number, previous: number): string {
-    if (previous === 0) return current > 0 ? '+100%' : '0%';
-    const change = ((current - previous) / previous) * 100;
-    return change >= 0 ? `+${change.toFixed(1)}%` : `${change.toFixed(1)}%`;
+  private calculateTrend(current: number, prev: number): string {
+    if (prev === 0) return current > 0 ? '+100%' : '0%';
+    const trend = ((current - prev) / prev) * 100;
+    return `${trend > 0 ? '+' : ''}${trend.toFixed(1)}%`;
   }
 
-  private calculateTrendDirection(current: number, previous: number): string {
-    if (previous === 0) return current > 0 ? 'up' : 'neutral';
-    return current >= previous ? 'up' : 'down';
+  private calculateTrendDirection(
+    current: number,
+    prev: number,
+  ): 'up' | 'down' | 'neutral' {
+    if (current > prev) return 'up';
+    if (current < prev) return 'down';
+    return 'neutral';
   }
 
   // ==========================================
@@ -137,6 +141,7 @@ export class DashboardService {
   // ==========================================
   // FITUR: OVERVIEW DASHBOARD & KALKULASI TREN
   // ==========================================
+  // --- FUNGSI GET OVERVIEW YANG DIPERBAIKI ---
   async getOverview() {
     try {
       const now = new Date();
@@ -154,17 +159,22 @@ export class DashboardService {
       });
       const totalRevenue = totalRevenueResult._sum.totalSales ?? 0;
 
-      const revThisMonth = await this.prisma.transaction.aggregate({
-        _sum: { totalSales: true },
-        where: { status: 'Completed', invoiceDate: { gte: startOfThisMonth } },
-      });
-      const revLastMonth = await this.prisma.transaction.aggregate({
-        _sum: { totalSales: true },
-        where: {
-          status: 'Completed',
-          invoiceDate: { gte: startOfLastMonth, lt: startOfThisMonth },
-        },
-      });
+      const [revThisMonth, revLastMonth] = await Promise.all([
+        this.prisma.transaction.aggregate({
+          _sum: { totalSales: true },
+          where: {
+            status: 'Completed',
+            invoiceDate: { gte: startOfThisMonth },
+          },
+        }),
+        this.prisma.transaction.aggregate({
+          _sum: { totalSales: true },
+          where: {
+            status: 'Completed',
+            invoiceDate: { gte: startOfLastMonth, lt: startOfThisMonth },
+          },
+        }),
+      ]);
 
       const currentRev = revThisMonth._sum.totalSales ?? 0;
       const prevRev = revLastMonth._sum.totalSales ?? 0;
@@ -175,20 +185,23 @@ export class DashboardService {
       );
 
       // --- 2. KALKULASI PELANGGAN ---
-      const customers = await this.prisma.transaction.findMany({
-        distinct: ['customerId'],
-      });
-      const totalCustomers = customers.length;
+      // Optimasi: Gunakan groupBy untuk performa lebih baik daripada findMany
+      const [custThisMonth, custLastMonth] = await Promise.all([
+        this.prisma.transaction.groupBy({
+          by: ['customerId'],
+          where: { invoiceDate: { gte: startOfThisMonth } },
+        }),
+        this.prisma.transaction.groupBy({
+          by: ['customerId'],
+          where: {
+            invoiceDate: { gte: startOfLastMonth, lt: startOfThisMonth },
+          },
+        }),
+      ]);
 
-      const custThisMonth = await this.prisma.transaction.findMany({
-        distinct: ['customerId'],
-        where: { invoiceDate: { gte: startOfThisMonth } },
-      });
-      const custLastMonth = await this.prisma.transaction.findMany({
-        distinct: ['customerId'],
-        where: { invoiceDate: { gte: startOfLastMonth, lt: startOfThisMonth } },
-      });
-
+      const totalCustomers = (
+        await this.prisma.transaction.groupBy({ by: ['customerId'] })
+      ).length;
       const customersTrend = this.calculateTrend(
         custThisMonth.length,
         custLastMonth.length,
@@ -199,18 +212,19 @@ export class DashboardService {
       );
 
       // --- 3. KALKULASI ALERT ---
-      const activeAlerts = await this.prisma.alert.count({
-        where: { status: 'ACTIVE' },
-      });
-      const alertsThisMonth = await this.prisma.alert.count({
-        where: { status: 'ACTIVE', createdAt: { gte: startOfThisMonth } },
-      });
-      const alertsLastMonth = await this.prisma.alert.count({
-        where: {
-          status: 'ACTIVE',
-          createdAt: { gte: startOfLastMonth, lt: startOfThisMonth },
-        },
-      });
+      const [activeAlerts, alertsThisMonth, alertsLastMonth] =
+        await Promise.all([
+          this.prisma.alert.count({ where: { status: 'ACTIVE' } }),
+          this.prisma.alert.count({
+            where: { status: 'ACTIVE', createdAt: { gte: startOfThisMonth } },
+          }),
+          this.prisma.alert.count({
+            where: {
+              status: 'ACTIVE',
+              createdAt: { gte: startOfLastMonth, lt: startOfThisMonth },
+            },
+          }),
+        ]);
 
       const alertsTrend = this.calculateTrend(alertsThisMonth, alertsLastMonth);
       const alertsTrendDirection = this.calculateTrendDirection(
@@ -232,17 +246,17 @@ export class DashboardService {
       });
 
       const monthlyMap = new Map<string, number>();
-      for (const tx of allTransactions) {
+      allTransactions.forEach((tx) => {
         const d = new Date(tx.invoiceDate);
         const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
         monthlyMap.set(key, (monthlyMap.get(key) ?? 0) + tx.totalSales);
-      }
+      });
 
       const revenueByMonth = Array.from(monthlyMap.entries()).map(
         ([month, actual]) => ({
           month,
           actual: Math.round(actual),
-          predicted: Math.round(actual * (1 + Math.random() * 0.15)),
+          predicted: Math.round(actual * (1 + Math.random() * 0.15)), // AI Mockup
         }),
       );
 
@@ -259,18 +273,14 @@ export class DashboardService {
           },
         );
 
-        if (
-          pythonResponse.data &&
-          pythonResponse.data.growth_percentage !== undefined
-        ) {
+        if (pythonResponse.data?.growth_percentage !== undefined) {
           predictedGrowth = `${pythonResponse.data.growth_percentage}%`;
           predictedTrend = pythonResponse.data.trend || '+0.0%';
         }
-      } catch (pythonError: any) {
-        console.warn('⚠️ API Python offline.', pythonError.message);
+      } catch (pythonError) {
+        console.warn('⚠️ API Python offline/gagal.');
       }
 
-      // KEMBALIKAN SEMUA DATA (TERMASUK DIRECTION UNTUK UI)
       return {
         totalRevenue,
         activeAlerts,
@@ -280,18 +290,17 @@ export class DashboardService {
         predictedGrowth,
         predictedTrend,
         revenueTrend,
-        revenueTrendDirection, // <--- BARU: untuk warna hijau/merah di UI
+        revenueTrendDirection,
         alertsTrend,
-        alertsTrendDirection, // <--- BARU
+        alertsTrendDirection,
         customersTrend,
-        customersTrendDirection, // <--- BARU
+        customersTrendDirection,
       };
     } catch (error) {
       console.error('Gagal mengambil data overview:', error);
       throw new InternalServerErrorException('Gagal memuat data dasbor');
     }
   }
-
   // ==========================================
   // FITUR: PREDIKSI CHURN MANUAL
   // ==========================================
